@@ -9,6 +9,30 @@ from .task import Task, DelayedLoaded
 from .loader import generate_tasks
 
 
+def get_delayed_placeholder(tasks, name):
+    """If `name` is not yet a real task but is (or will be) a subtask or
+    nested virtual group of a not-yet-created delayed task-creator,
+    create a placeholder Task carrying that creator's loader and
+    register it in `tasks` so dispatch can trigger the loader.
+
+    @param tasks: (dict) name -> Task, shared between TaskControl and
+                  TaskDispatcher
+    @return the placeholder Task, or None if `name` can't be resolved
+            this way (its basename is not a delayed task-creator).
+    """
+    if name in tasks:
+        return tasks[name]
+    basename = name.split(':', 1)[0]
+    basename_task = tasks.get(basename)
+    if basename_task is None or not basename_task.loader:
+        return None
+    loader = basename_task.loader
+    loader.basename = basename
+    placeholder = Task(name, None, loader=loader)
+    tasks[name] = placeholder
+    return placeholder
+
+
 class RegexGroup:
     '''Helper to keep track of all delayed-tasks which regexp target
     matches the target specified from command line.
@@ -78,9 +102,11 @@ class TaskControl:
     def _check_dep_names(self):
         """check if user input task_dep or setup_task that doesnt exist"""
         # check task-dependencies exist.
-        for task in self.tasks.values():
+        # iterate over a snapshot: resolving a delayed dep below inserts
+        # placeholder tasks into self.tasks.
+        for task in list(self.tasks.values()):
             for dep in task.task_dep:
-                if dep not in self.tasks:
+                if dep not in self.tasks and not get_delayed_placeholder(self.tasks, dep):
                     msg = f"{task.name}. Task dependency '{dep}' does not exist."
                     raise InvalidTask(msg)
 
@@ -203,13 +229,7 @@ class TaskControl:
                 continue
 
             # if can not find name check if it is a sub-task of a delayed
-            basename = filter_.split(':', 1)[0]
-            if basename in self.tasks:
-                loader = self.tasks[basename].loader
-                if not loader:
-                    raise InvalidCommand(not_found=filter_)
-                loader.basename = basename
-                self.tasks[filter_] = Task(filter_, None, loader=loader)
+            if get_delayed_placeholder(self.tasks, filter_):
                 selected_task.append(filter_)
                 continue
 
@@ -373,6 +393,11 @@ class TaskDispatcher:
 
         # first time, create node
         if node is None:
+            if task_name not in self.tasks:
+                # task_dep on a subtask/nested-group of a delayed
+                # task-creator that hasn't run yet -- create a placeholder
+                # so this node's DelayedLoader branch triggers it.
+                get_delayed_placeholder(self.tasks, task_name)
             node = ExecNode(self.tasks[task_name], parent)
             node.generator = self._add_task(node)
             self.nodes[task_name] = node
