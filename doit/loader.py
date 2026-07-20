@@ -332,7 +332,8 @@ def _generate_task_from_yield(tasks, func_name, task_dict, gen_doc):
             return
 
         # name is '<task>.<subtask>'
-        full_name = f"{basename}:{task_dict['name']}"
+        subname = task_dict['name']
+        full_name = f"{basename}:{subname}"
         if full_name in tasks:
             raise InvalidTask(msg_dup % (func_name, full_name))
         task_dict['name'] = full_name
@@ -349,6 +350,35 @@ def _generate_task_from_yield(tasks, func_name, task_dict, gen_doc):
             tasks[basename] = group_task
         group_task.task_dep.append(sub_task.name)
         tasks[sub_task.name] = sub_task
+
+        # `subname` may itself contain ':' (e.g. "prim_red:red_4MB:D32_T8"),
+        # used by callers purely as a naming convention to organize subtasks
+        # hierarchically. Register a "virtual" group task for every such
+        # intermediate prefix (e.g. "compile_cinm1:prim_red" and
+        # "compile_cinm1:prim_red:red_4MB") so that selecting that prefix on
+        # the command line (or via the API) resolves to "every real subtask
+        # nested under it", instead of doit treating an unrecognized prefix
+        # as an unrelated, action-less task.
+        #
+        # This is purely additive: these virtual groups are never appended
+        # to `group_task.task_dep` above, and `sub_task.subtask_of` still
+        # points straight at `basename` -- so the pre-existing basename-group
+        # semantics (result aggregation, getargs, `clean`, `--single`, ...)
+        # are unaffected. Each virtual group's own task_dep flatly lists the
+        # real subtask names nested under it (not other virtual groups), so
+        # there is no multi-level graph to walk during execution either.
+        prefix = basename
+        for part in subname.split(':')[:-1]:
+            prefix = f"{prefix}:{part}"
+            virtual_group = tasks.get(prefix)
+            if virtual_group:
+                if not virtual_group.has_subtask:
+                    raise InvalidTask(msg_dup % (func_name, prefix))
+            else:
+                virtual_group = Task(prefix, None, doc=gen_doc, has_subtask=True)
+                tasks[prefix] = virtual_group
+            if full_name not in virtual_group.task_dep:
+                virtual_group.task_dep.append(full_name)
     # NOT a sub-task
     else:
         if not basename:

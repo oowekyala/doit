@@ -613,7 +613,13 @@ def subtasks_iter(tasks, task):
     @param tasks (dict - Task)
     @param task (Task)
     """
+    prefix = task.name + ":"
     for name in task.task_dep:
         dep = tasks[name]
-        if dep.subtask_of == task.name:
+        # `dep.subtask_of == task.name` covers task's direct subtasks.
+        # `dep.name.startswith(prefix)` additionally covers subtasks nested
+        # under one of task's "virtual" intermediate groups (see
+        # loader._generate_task_from_yield), whose own subtask_of still
+        # points at the top-level basename rather than at `task`.
+        if dep.subtask_of == task.name or dep.name.startswith(prefix):
             yield dep
