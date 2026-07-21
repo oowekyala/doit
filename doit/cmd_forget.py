@@ -55,14 +55,24 @@ class Forget(DoitCmdBase):
             check_tasks_exist(tasks, self.sel_tasks)
             forget_list = self.sel_tasks
 
+            # always forget the selected tasks together with their
+            # structural subtasks (task-group members), never their deps
+            to_forget = []
+            seen = set()
+            for name in forget_list:
+                task = tasks[name]
+                for sub in [task] + list(subtasks_iter(tasks, task)):
+                    if sub.name not in seen:
+                        seen.add(sub.name)
+                        to_forget.append(sub)
+
             if forget_sub:
-                to_forget = list(tasks_and_deps_iter(tasks, forget_list, True))
-            else:
-                to_forget = []
-                for name in forget_list:
-                    task = tasks[name]
-                    to_forget.append(task)
-                    to_forget.extend(subtasks_iter(tasks, task))
+                # additionally forget the (real) dependencies of every
+                # task/subtask found above
+                for dep in tasks_and_deps_iter(tasks, [t.name for t in to_forget]):
+                    if dep.name not in seen:
+                        seen.add(dep.name)
+                        to_forget.append(dep)
 
             for task in to_forget:
                 # forget it - remove from dependency file

@@ -623,3 +623,14 @@ def subtasks_iter(tasks, task):
         # points at the top-level basename rather than at `task`.
         if dep.subtask_of == task.name or dep.name.startswith(prefix):
             yield dep
+
+    # The "virtual" intermediate groups themselves (e.g.
+    # `compile_cinm2:prim_red:fnA`, nested under `compile_cinm2:prim_red`)
+    # are never referenced from anyone's task_dep -- the loader only links
+    # real leaf tasks that way, and threads the intermediate groups through
+    # purely by name prefix (see loader._generate_task_from_yield). Find
+    # those separately so they get forgotten/cleaned along with their real
+    # subtasks, at any nesting depth.
+    for dep in tasks.values():
+        if dep.has_subtask and dep.subtask_of is None and dep.name.startswith(prefix):
+            yield dep
