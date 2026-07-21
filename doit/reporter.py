@@ -33,6 +33,18 @@ class ConsoleReporter:
         pass
 
 
+    def update_total(self, new_tasks):
+        """called when new tasks are added to the graph after the initial
+        load -- i.e. when a @create_after delayed task-creator gets
+        expanded (see TaskDispatcher._add_task). `new_tasks` is the list of
+        newly created Task objects, generated in one batch ahead of their
+        individual selection/execution -- unlike get_status(), which only
+        fires one task at a time, interleaved with that same task's
+        selection, this is the only hook that can report an accurate
+        growing total before those tasks are themselves resolved."""
+        pass
+
+
     def get_status(self, task):
         """called when task is selected (check if up-to-date)"""
         pass
@@ -290,3 +302,123 @@ class JsonReporter:
         # indent not available on simplejson 1.3 (debian etch)
         # json.dump(json_data, sys.stdout, indent=4)
         json.dump(json_data, self.outstream)
+
+
+class _TqdmProxyStream:
+    """File-like proxy for sys.stdout/sys.stderr that routes writes through
+    tqdm.write() instead of a plain write(), so output interleaves cleanly
+    above the bar instead of corrupting its carriage-return redraw.
+    """
+
+    def __init__(self, outstream, tqdm_cls):
+        self._outstream = outstream
+        self._buf = ""
+        self._tqdm = tqdm_cls
+
+    def write(self, text):
+        self._buf += text
+        *lines, self._buf = self._buf.split("\n")
+        for line in lines:
+            self._tqdm.write(line, file=self._outstream)
+        return len(text)
+
+    def flush(self):
+        if self._buf:
+            self._tqdm.write(self._buf, file=self._outstream)
+            self._buf = ""
+        if hasattr(self._outstream, "flush"):
+            self._outstream.flush()
+
+    def isatty(self):
+        return hasattr(self._outstream, "isatty") and self._outstream.isatty()
+
+
+class ProgressBarReporter(ConsoleReporter):
+    """
+    Progress bar reporter using the TQDM module.
+    """
+
+    desc = "progress bar (tqdm) instead of one line per task"
+
+    def __init__(self, outstream, options):
+        super().__init__(outstream, options)
+        # Late import to make dependency optional
+        from tqdm import tqdm
+
+        self._tqdm = tqdm
+        self.pbar = tqdm(total=0, unit="task", file=outstream, dynamic_ncols=True)
+        # Route real-time task output through tqdm.write for the lifetime of
+        # the run -- see _TqdmProxyStream for why this is what doit's task
+        # execution actually picks up.
+        self._old_stdout = sys.stdout
+        self._old_stderr = sys.stderr
+        sys.stdout = _TqdmProxyStream(outstream, tqdm)
+        sys.stderr = _TqdmProxyStream(outstream, tqdm)
+
+    @staticmethod
+    def _is_tracked(task) -> bool:
+        # Group/placeholder tasks (has_subtask, no actions of their own) and
+        # private tasks (leading underscore, doit's own convention) aren't
+        # real work -- counting them would swamp the bar with thousands of
+        # zero-cost nodes.
+        return bool(task.actions) and task.name[0] != '_'
+
+    def initialize(self, tasks, selected_tasks):
+        # Seed with every eagerly-loaded task already known before execution
+        # starts. @create_after subtasks aren't among these yet -- their
+        # loader placeholder has no actions, so _is_tracked already excludes
+        # it -- those arrive later through update_total.
+        self.pbar.total = sum(1 for t in tasks.values() if self._is_tracked(t))
+        self.pbar.refresh()
+
+    def update_total(self, new_tasks):
+        n = sum(1 for t in new_tasks if self._is_tracked(t))
+        if n:
+            self.pbar.total += n
+            self.pbar.refresh()
+
+    def execute_task(self, task):
+        if self._is_tracked(task):
+            self.pbar.set_description(task.name[:60], refresh=False)
+
+    def add_failure(self, task, fail):
+        super().add_failure(task, fail)
+        if self._is_tracked(task):
+            self.pbar.update(1)
+
+    def add_success(self, task):
+        if self._is_tracked(task):
+            self.pbar.update(1)
+
+    def skip_uptodate(self, task):
+        # Not real work -- shrink the total instead of advancing
+        # progress, so a pipeline with many already-done tasks doesn't
+        # report a fast rate/ETA from skips and then stall once it reaches
+        # the actually-expensive remaining tasks.
+        if self._is_tracked(task):
+            self.pbar.total -= 1
+            self.pbar.refresh()
+
+    def skip_ignore(self, task):
+        if self._is_tracked(task):
+            self._tqdm.write("!! %s" % task.title(), file=self.outstream)
+            self.pbar.total -= 1
+            self.pbar.refresh()
+
+    def _write_failure(self, result, write_exception=True):
+        # Same content as ConsoleReporter._write_failure, but through
+        # tqdm.write instead of self.write (plain outstream.write) so it
+        # doesn't get mangled by the bar's own carriage-return redraw --
+        # this fires immediately from add_failure, while the bar is still
+        # active, not just from complete_run's after-the-fact replay.
+        msg = '%s - taskid:%s' % (result['exception'].get_name(), result['task'].name)
+        self._tqdm.write(msg, file=self.outstream)
+        if write_exception:
+            self._tqdm.write(result['exception'].get_msg(), file=self.outstream)
+
+    def complete_run(self):
+        self.pbar.refresh() # do a last refresh
+        sys.stdout = self._old_stdout
+        sys.stderr = self._old_stderr
+        self.pbar.close()
+        super().complete_run()

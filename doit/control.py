@@ -279,13 +279,18 @@ class TaskControl:
             self.selected_tasks = self._def_order
 
 
-    def task_dispatcher(self):
+    def task_dispatcher(self, reporter=None):
         """return a TaskDispatcher generator
+
+        @param reporter: (optional) reporter instance -- if given,
+               TaskDispatcher notifies it (via update_total()) whenever a
+               delayed task-creator expands, so it can track a growing
+               total ahead of those new tasks' own selection/execution.
         """
         assert self.selected_tasks is not None, \
             "must call 'process' before this"
 
-        return TaskDispatcher(self.tasks, self.targets, self.selected_tasks)
+        return TaskDispatcher(self.tasks, self.targets, self.selected_tasks, reporter)
 
 
 
@@ -374,10 +379,11 @@ class TaskDispatcher:
 
     Note that a dispatched task might not be ready to be executed.
     """
-    def __init__(self, tasks, targets, selected_tasks):
+    def __init__(self, tasks, targets, selected_tasks, reporter=None):
         self.tasks = tasks
         self.targets = targets
         self.selected_tasks = selected_tasks
+        self.reporter = reporter
 
         self.nodes = {}  # key task-name, value: ExecNode
         # queues
@@ -501,6 +507,8 @@ class TaskDispatcher:
                     if not nt.loader:
                         nt.loader = DelayedLoaded
                     self.tasks[nt.name] = nt
+                if self.reporter is not None:
+                    self.reporter.update_total(new_tasks)
             # check itself for implicit dep (used by regex_target)
             TaskControl.add_implicit_task_dep(
                 self.targets, this_task, this_task.file_dep)
