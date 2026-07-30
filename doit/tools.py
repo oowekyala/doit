@@ -1,5 +1,6 @@
 """extra goodies to be used in dodo files"""
 
+import glob
 import os
 import time as time_module
 import datetime
@@ -10,6 +11,7 @@ import subprocess
 
 from . import exceptions
 from .action import CmdAction, PythonAction
+from .dependency import get_file_md5
 from .task import result_dep  # imported for backward compatibility
 result_dep  # pyflakes
 
@@ -85,6 +87,70 @@ class config_changed:
 
 
 # uptodate
+class glob_dep:
+    """check if the set of files matched by a glob pattern, or the content
+    of any matched file, changed since last run.
+
+    Unlike file_dep (a fixed list of paths known up front when the task is
+    created), this is for tasks whose dependency set is only known by
+    scanning the filesystem -- e.g. "every csv currently under some
+    directory" -- where the match set itself, not just each matched file's
+    content, can change between runs (files appearing/disappearing should
+    also mark the task as not up to date, not just files being edited).
+
+    Per-file state is (mtime, size, md5) -- the same (timestamp, file-size,
+    md5) shortcut MD5Checker uses (see its docstring): md5 is only
+    recomputed for a file whose mtime doesn't match what's on record, so an
+    unchanged file is never re-hashed on subsequent checks, only ones that
+    are new or whose mtime moved. A file touched without its content
+    actually changing (new mtime, same md5) still compares as unchanged --
+    only the md5 is compared, not the whole state tuple -- so it doesn't
+    force a rerun either.
+
+    @var pattern (str): glob pattern, passed to glob.glob()
+    @var recursive (bool): passed through to glob.glob() (enables "**")
+    """
+    def __init__(self, pattern, recursive=False):
+        self.pattern = pattern
+        self.recursive = recursive
+        self.state = None
+        self.key = '_glob_dep:%s' % pattern
+
+    def _calc_state(self, matched, previous):
+        previous = previous or {}
+        state = {}
+        for path in matched:
+            file_stat = os.stat(path)
+            prev_entry = previous.get(path)
+            if prev_entry and prev_entry[0] == file_stat.st_mtime:
+                state[path] = prev_entry  # mtime unchanged, skip re-hashing
+            else:
+                state[path] = (file_stat.st_mtime, file_stat.st_size,
+                                get_file_md5(path))
+        return state
+
+    def configure_task(self, task):
+        task.value_savers.append(lambda: {self.key: self.state})
+
+    def __call__(self, task, values):
+        """return True if the matched file set is unchanged and every
+        matched file's content (md5, not mtime/size) matches last run"""
+        matched = sorted(p for p in glob.glob(self.pattern, recursive=self.recursive)
+                          if os.path.isfile(p))
+        previous = values.get(self.key)
+        self.state = self._calc_state(matched, previous)
+        if previous is None:
+            return False
+        if set(previous) != set(matched):
+            return False
+        return all(previous[path][2] == self.state[path][2] for path in matched)
+
+    def __repr__(self):
+        return "glob_dep(%r)" % self.pattern
+
+
+
+# uptodate
 class timeout:
     """add timeout to task
 
@@ -148,7 +214,7 @@ class check_timestamp_unchanged:
         else:
             raise ValueError('time can be one of: atime, access, ctime, '
                              'status, mtime, modify (got: %r)' % time)
-        self._file_name = file_name
+        self._file_name = str(file_name)
         self._cmp_op = cmp_op
         self._key = '.'.join([self._file_name, self._timeattr])
 
