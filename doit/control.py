@@ -154,6 +154,18 @@ class TaskControl:
                 task.task_dep.append(targets[dep])
 
 
+    def _suggestion_candidates(self):
+        """valid names a rejected command-line filter could be a typo of
+
+        A filter names a task or a target, so both are offered. Placeholders
+        of delayed task-creators are included as-is: their subtasks do not
+        exist yet, but the basename is a legitimate thing to type.
+        """
+        names = [name for name in self.tasks if name[0] != '_']
+        names.extend(self.targets)
+        return names
+
+
     def _get_wild_tasks(self, pattern):
         """get list of tasks that match pattern"""
         wild_list = []
@@ -261,7 +273,8 @@ class TaskControl:
 
             if not delayed_matched:
                 # not found
-                raise InvalidCommand(not_found=filter_)
+                raise InvalidCommand(not_found=filter_,
+                                     candidates=self._suggestion_candidates())
         return selected_task
 
 
@@ -524,7 +537,13 @@ class TaskDispatcher:
                     if len(regex_group.tasks) == 0:
                         # In case no task is left, we cannot find a task
                         # generating this target. Print an error message!
-                        raise InvalidCommand(not_found=regex_group.target)
+                        # By now the delayed tasks are created, so their
+                        # targets are known and worth suggesting.
+                        candidates = [name for name in self.tasks
+                                      if name[0] != '_']
+                        candidates.extend(self.targets)
+                        raise InvalidCommand(not_found=regex_group.target,
+                                             candidates=candidates)
 
             # mark this loader to not be executed again
             this_task.loader.created = True

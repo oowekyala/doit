@@ -366,6 +366,19 @@ class TestCheckTasksExist(unittest.TestCase):
         }
         check_tasks_exist(tasks, ['t2'])
 
+    def test_invalid_suggests_task(self):
+        tasks = {'compile': Task("compile", [""])}
+        with self.assertRaises(InvalidCommand) as raised:
+            check_tasks_exist(tasks, ['compil'])
+        self.assertIn("'compil' is not a task. Did you mean: compile?",
+                      str(raised.exception))
+
+    def test_invalid_no_suggestion(self):
+        tasks = {'compile': Task("compile", [""])}
+        with self.assertRaises(InvalidCommand) as raised:
+            check_tasks_exist(tasks, ['zzzzzzz'])
+        self.assertEqual("'zzzzzzz' is not a task.", str(raised.exception))
+
 
 class TestTaskAndDepsIter(unittest.TestCase):
 

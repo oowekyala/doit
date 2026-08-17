@@ -7,7 +7,7 @@ import textwrap
 from .globals import Globals
 from . import version
 from .cmdparse import CmdOption, CmdParse
-from .exceptions import InvalidCommand, InvalidDodoFile
+from .exceptions import InvalidCommand, InvalidDodoFile, did_you_mean
 from .dependency import CHECKERS, DbmDB, JsonDB, SqliteDB, Dependency, JSONCodec
 from .action import CmdAction
 from .plugin import PluginDict
@@ -582,8 +582,10 @@ def check_tasks_exist(tasks, name_list, skip_wildcard=False):
         if skip_wildcard and '*' in task_name:
             continue
         if task_name not in tasks:
-            msg = "'%s' is not a task."
-            raise InvalidCommand(msg % task_name)
+            msg = "'%s' is not a task." % task_name
+            suggestion = did_you_mean(task_name,
+                                      [n for n in tasks if n[0] != '_'])
+            raise InvalidCommand(' '.join(filter(None, (msg, suggestion))))
 
 
 # this is used by commands that do not execute tasks (forget, auto...)

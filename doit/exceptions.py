@@ -1,34 +1,75 @@
 """Handle exceptions generated from 'user' code"""
 
+import difflib
 import sys
 import traceback
 
 
+# how many alternatives to offer, and how similar a name must be to be
+# worth offering (difflib similarity ratio, 0..1)
+SUGGEST_MAX = 3
+SUGGEST_CUTOFF = 0.6
+
+
+def did_you_mean(name, candidates):
+    """suggest a correction for a misspelled `name`
+
+    @param candidates: (iterable - str) the valid names
+    @return (str) a 'Did you mean' sentence, or '' if nothing is close enough
+    """
+    if not name or not candidates:
+        return ''
+    # a name can legitimately be in the pool twice (a task named after its
+    # own target, say) and would then take up two of the slots
+    unique = list(dict.fromkeys(candidates))
+    close = difflib.get_close_matches(name, unique,
+                                      n=SUGGEST_MAX, cutoff=SUGGEST_CUTOFF)
+    if not close:
+        return ''
+    return 'Did you mean: {}?'.format(', '.join(close))
+
+
 class InvalidCommand(Exception):
     """Invalid command line argument."""
+
     def __init__(self, *args, **kwargs):
         self.not_found = kwargs.pop('not_found', None)
+        # valid names `not_found` might be a misspelling of
+        self.candidates = list(kwargs.pop('candidates', ()))
         super(InvalidCommand, self).__init__(*args, **kwargs)
         self.cmd_used = None
         self.bin_name = 'doit'  # default but might be overwriten
+
+    def add_candidates(self, names):
+        """add names to the pool used to suggest a correction
+
+        Used by callers that know about valid names the raising code did
+        not, i.e. the sub-command names when no command was specified.
+        """
+        self.candidates.extend(names)
 
     def __str__(self):
         if self.not_found is None:
             return super(InvalidCommand, self).__str__()
 
+        suggestion = did_you_mean(self.not_found, self.candidates)
+        did_you_mean_line = suggestion + '\n' if suggestion else ''
+
         if self.cmd_used:
             msg_task_not_found = (
                 'command `{cmd_used}` invalid parameter: "{not_found}".'
                 ' Must be a task, or a target.\n'
+                '{did_you_mean}'
                 'Type "{bin_name} list" to see available tasks')
-            return msg_task_not_found.format(**self.__dict__)
         else:
-            msg_cmd_task_not_found = (
+            msg_task_not_found = (
                 'Invalid parameter: "{not_found}".'
                 ' Must be a command, task, or a target.\n'
+                '{did_you_mean}'
                 'Type "{bin_name} help" to see available commands.\n'
                 'Type "{bin_name} list" to see available tasks.\n')
-            return msg_cmd_task_not_found.format(**self.__dict__)
+        return msg_task_not_found.format(did_you_mean=did_you_mean_line,
+                                         **self.__dict__)
 
 
 

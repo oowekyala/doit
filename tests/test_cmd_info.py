@@ -32,6 +32,16 @@ class TestCmdInfo(DepManagerMixin, unittest.TestCase):
         self.assertRaises(InvalidCommand, cmd._execute, [])
         self.assertRaises(InvalidCommand, cmd._execute, ['t1', 't2'])
 
+    def test_unknown_task(self):
+        output = StringIO()
+        task = Task("compile", [], file_dep=['tests/data/dependency1'])
+        cmd = CmdFactory(Info, outstream=output,
+                         dep_file=self.dep_manager.name, task_list=[task])
+        with self.assertRaises(InvalidCommand) as raised:
+            cmd._execute(['compil'])
+        self.assertIn("'compil' is not a task. Did you mean: compile?",
+                      str(raised.exception))
+
 
 class TestCmdInfoStatus(DependencyFileMixin, DepManagerMixin, unittest.TestCase):
 

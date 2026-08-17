@@ -125,6 +125,17 @@ class TestErrors(unittest.TestCase):
         self.assertEqual(3, got)
         self.assertIn("ERROR", err.getvalue())
 
+    def test_mistyped_command_suggested(self):
+        # a name that is not a sub-command is taken as a task name for the
+        # default `run` command, so the sub-commands must be offered too
+        mock_cmd = Mock(side_effect=InvalidCommand(not_found='lst'))
+        err = io.StringIO()
+        with patch.object(Run, "execute", mock_cmd), \
+             contextlib.redirect_stderr(err):
+            got = cmd_main(['lst'])
+        self.assertEqual(3, got)
+        self.assertIn("Did you mean: list?", err.getvalue())
+
     def test_internal_error(self):
         mock_cmd = Mock(side_effect=Exception)
         err = io.StringIO()

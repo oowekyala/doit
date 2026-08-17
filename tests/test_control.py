@@ -211,6 +211,29 @@ class TestTaskControlCmdOptions(unittest.TestCase):
         tc = TaskControl([t1, t2])
         self.assertRaises(InvalidCommand, tc._filter_tasks, ['taskX:no'])
 
+    def _filter_error_msg(self, tc, name):
+        """message of the InvalidCommand raised by filtering on `name`"""
+        with self.assertRaises(InvalidCommand) as raised:
+            tc._filter_tasks([name])
+        raised.exception.cmd_used = 'run'
+        return str(raised.exception)
+
+    def testFilterWrongNameSuggestsTask(self):
+        tc = TaskControl(_make_tasks_sample())
+        msg = self._filter_error_msg(tc, 'g1.c')
+        self.assertIn('Did you mean:', msg)
+        self.assertIn('g1.a', msg)
+        self.assertIn('g1.b', msg)
+
+    def testFilterWrongNameSuggestsTarget(self):
+        tc = TaskControl([Task("taskX", [""], targets=['out.txt'])])
+        msg = self._filter_error_msg(tc, 'out.txtt')
+        self.assertIn('Did you mean: out.txt?', msg)
+
+    def testFilterWrongNameNoSuggestion(self):
+        tc = TaskControl(_make_tasks_sample())
+        self.assertNotIn('Did you mean', self._filter_error_msg(tc, 'zzzzzzz'))
+
     def testFilterEmptyList(self):
         tasks_sample = _make_tasks_sample()
         filter_ = []

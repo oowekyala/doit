@@ -299,6 +299,11 @@ class DoitMain:
             if isinstance(err, InvalidCommand):
                 err.cmd_used = cmd_name if specified_run else None
                 err.bin_name = self.BIN_NAME
+                if not specified_run:
+                    # the rejected name was taken as a task name for the
+                    # default command, but a mistyped sub-command lands here
+                    # too -- offer those as corrections as well
+                    err.add_candidates(sub_cmds.keys())
             sys.stderr.write("ERROR: %s\n" % str(err))
             return 3
 
