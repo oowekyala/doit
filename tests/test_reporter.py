@@ -247,6 +247,102 @@ class TestErrorOnlyReporter(unittest.TestCase):
         self.assertIn("Something unexpected", rep.outstream.getvalue())
 
 
+class TestProgressBarReporter(unittest.TestCase):
+
+    @staticmethod
+    def _action():
+        pass
+
+    @classmethod
+    def _task(cls, name, **kwargs):
+        return Task(name, [(cls._action,)], **kwargs)
+
+    @contextlib.contextmanager
+    def _reporter(self, tasks, selected):
+        """a reporter already initialized with `tasks` (list) and `selected`
+
+        The reporter replaces sys.stdout/sys.stderr until complete_run, so
+        always give it the chance to put them back.
+        """
+        rep = reporter.ProgressBarReporter(StringIO(), {})
+        try:
+            rep.initialize({t.name: t for t in tasks}, selected)
+            yield rep
+        finally:
+            rep.complete_run()
+
+    def test_total_ignores_unselected_tasks(self):
+        tasks = [self._task('wanted'), self._task('unrelated')]
+        with self._reporter(tasks, ['wanted']) as rep:
+            self.assertEqual(1, rep.pbar.total)
+
+    def test_total_follows_dependencies(self):
+        tasks = [
+            self._task('wanted', task_dep=['dep'], setup=['a_setup']),
+            self._task('dep', calc_dep=['calculated']),
+            self._task('calculated'),
+            self._task('a_setup'),
+            self._task('unrelated'),
+        ]
+        with self._reporter(tasks, ['wanted']) as rep:
+            self.assertEqual(4, rep.pbar.total)
+
+    def test_total_ignores_tasks_without_actions(self):
+        tasks = [Task('group', None, task_dep=['group:sub']),
+                 self._task('group:sub')]
+        with self._reporter(tasks, ['group']) as rep:
+            self.assertEqual(1, rep.pbar.total)
+
+    def test_delayed_tasks_added_to_total(self):
+        # placeholder for a delayed creator: no actions of its own, and a
+        # task_dep on the task that must run before the creator (`executed=`)
+        placeholder = Task('delayed', None, task_dep=['before'])
+        tasks = [placeholder, self._task('before')]
+        with self._reporter(tasks, ['delayed']) as rep:
+            self.assertEqual(1, rep.pbar.total)
+            rep.execute_task(tasks[1])
+            rep.add_success(tasks[1])
+            # the creator ran: its tasks replace the placeholder, which also
+            # drops the `executed=` task_dep on the already-run task
+            new_tasks = [Task('delayed', None, task_dep=['delayed:sub0', 'delayed:sub1']),
+                         self._task('delayed:sub0'),
+                         self._task('delayed:sub1')]
+            rep._tasks.update({t.name: t for t in new_tasks})
+            rep.update_total(new_tasks)
+            self.assertEqual(3, rep.pbar.total)
+
+    def test_delayed_tasks_counted_once(self):
+        # a creator with `creates=[...]` is re-run once per created basename,
+        # reporting the same batch of tasks again
+        placeholder = Task('delayed', None)
+        with self._reporter([placeholder], ['delayed']) as rep:
+            new_tasks = [Task('delayed', None, task_dep=['delayed:sub0', 'delayed:sub1']),
+                         self._task('delayed:sub0'),
+                         self._task('delayed:sub1')]
+            rep._tasks.update({t.name: t for t in new_tasks})
+            rep.update_total(new_tasks)
+            rep.update_total(new_tasks)
+            self.assertEqual(2, rep.pbar.total)
+
+    def test_skipped_tasks_removed_from_total(self):
+        tasks = [self._task('t1'), self._task('t2'), self._task('t3')]
+        with self._reporter(tasks, ['t1', 't2', 't3']) as rep:
+            self.assertEqual(3, rep.pbar.total)
+            rep.skip_uptodate(tasks[0])
+            rep.skip_ignore(tasks[1])
+            self.assertEqual(1, rep.pbar.total)
+            # a later recount must not resurrect them
+            rep.update_total([])
+            self.assertEqual(1, rep.pbar.total)
+
+    def test_description_written_when_task_starts(self):
+        t1 = self._task('t1')
+        with self._reporter([t1], ['t1']) as rep:
+            rep.execute_task(t1)
+            self.assertIn('t1', rep.outstream.getvalue())
+            self.assertNotIn('1/1', rep.outstream.getvalue())
+
+
 class TestTaskResult(unittest.TestCase):
     def test(self):
         def sample():

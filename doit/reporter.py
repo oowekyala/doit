@@ -347,6 +347,16 @@ class ProgressBarReporter(ConsoleReporter):
 
         self._tqdm = tqdm
         self.pbar = tqdm(total=0, unit="task", file=outstream, dynamic_ncols=True)
+        # name -> Task for every task doit knows about. This is the dispatcher's
+        # own dict, kept by reference: it grows in place as delayed creators are
+        # expanded and as placeholders are resolved.
+        self._tasks = {}
+        # names given on the command line (or all tasks, when none were given)
+        self._selected = []
+        # tracked task names making up the current total, and those already
+        # resolved as no-work (removed from it)
+        self._counted = set()
+        self._skipped = set()
         # Route real-time task output through tqdm.write for the lifetime of
         # the run -- see _TqdmProxyStream for why this is what doit's task
         # execution actually picks up.
@@ -363,23 +373,63 @@ class ProgressBarReporter(ConsoleReporter):
         # zero-cost nodes.
         return bool(task.actions) and task.name[0] != '_'
 
-    def initialize(self, tasks, selected_tasks):
-        # Seed with every eagerly-loaded task already known before execution
-        # starts. @create_after subtasks aren't among these yet -- their
-        # loader placeholder has no actions, so _is_tracked already excludes
-        # it -- those arrive later through update_total.
-        self.pbar.total = sum(1 for t in tasks.values() if self._is_tracked(t))
+    def _reachable(self):
+        """names of the tasks that can be pulled in by the current selection.
+
+        Only a subset of the loaded tasks is usually going to run: the
+        selected ones plus whatever they depend on. Dependencies on another
+        task's target have already been turned into task_dep by
+        TaskControl.set_implicit_deps, and a group task lists its subtasks in
+        task_dep, so walking task_dep/setup_tasks/calc_dep covers the graph.
+        """
+        seen = set()
+        pending = list(self._selected)
+        while pending:
+            name = pending.pop()
+            if name in seen:
+                continue
+            seen.add(name)
+            task = self._tasks.get(name)
+            if task is None:
+                continue
+            pending.extend(task.task_dep)
+            pending.extend(task.setup_tasks)
+            pending.extend(task.calc_dep)
+        return seen
+
+    def _recount(self):
+        # Only ever grow the set: expanding a delayed creator overwrites its
+        # placeholder, and with it the placeholder's `executed=` task_dep, so
+        # a task counted earlier can drop out of the reachable set after
+        # having already been run and reported.
+        for name in self._reachable():
+            task = self._tasks.get(name)
+            if task is not None and self._is_tracked(task) and name not in self._skipped:
+                self._counted.add(name)
+        self.pbar.total = len(self._counted)
         self.pbar.refresh()
 
+    def initialize(self, tasks, selected_tasks):
+        # `tasks` is the dispatcher's live dict, so later expansions of
+        # @create_after creators show up here without any bookkeeping of our
+        # own -- update_total only has to say *when* to look again.
+        self._tasks = tasks
+        self._selected = selected_tasks
+        self._recount()
+
     def update_total(self, new_tasks):
-        n = sum(1 for t in new_tasks if self._is_tracked(t))
-        if n:
-            self.pbar.total += n
-            self.pbar.refresh()
+        # A creator's tasks are not necessarily all reachable (a creator that
+        # `creates` both a compile and a bench basename contributes nothing
+        # when only the compile side was selected), so recount the graph
+        # rather than adding len(new_tasks).
+        self._recount()
 
     def execute_task(self, task):
         if self._is_tracked(task):
-            self.pbar.set_description(task.name[:60], refresh=False)
+            # refresh right away: the point of the description is to say what
+            # is running *now*, and without it the name only reaches the
+            # terminal on the next update() -- i.e. once the task is done.
+            self.pbar.set_description(task.name[:60], refresh=True)
 
     def add_failure(self, task, fail):
         super().add_failure(task, fail)
@@ -391,19 +441,26 @@ class ProgressBarReporter(ConsoleReporter):
             self.pbar.update(1)
 
     def skip_uptodate(self, task):
-        # Not real work -- shrink the total instead of advancing
-        # progress, so a pipeline with many already-done tasks doesn't
-        # report a fast rate/ETA from skips and then stall once it reaches
-        # the actually-expensive remaining tasks.
         if self._is_tracked(task):
-            self.pbar.total -= 1
-            self.pbar.refresh()
+            self._drop(task)
 
     def skip_ignore(self, task):
         if self._is_tracked(task):
             self._tqdm.write("!! %s" % task.title(), file=self.outstream)
-            self.pbar.total -= 1
-            self.pbar.refresh()
+            self._drop(task)
+
+    def _drop(self, task):
+        """Take a task out of the total instead of advancing progress.
+
+        A skipped task is not real work, so a pipeline with many already-done
+        tasks would otherwise report a fast rate/ETA from the skips and then
+        stall once it reaches the actually-expensive remaining tasks. The name
+        is remembered so a later recount does not add it back.
+        """
+        self._skipped.add(task.name)
+        self._counted.discard(task.name)
+        self.pbar.total = len(self._counted)
+        self.pbar.refresh()
 
     def _write_failure(self, result, write_exception=True):
         # Same content as ConsoleReporter._write_failure, but through
