@@ -16,6 +16,136 @@ from .task import result_dep  # imported for backward compatibility
 result_dep  # pyflakes
 
 
+class _Unset:
+    """Marks a `task()` argument the caller did not pass.
+
+    Not None, which several task attributes take as a meaningful value
+    (`verbosity=None` means "use the default", and is not the same as leaving
+    verbosity out).
+    """
+    def __repr__(self):
+        return '<unset>'
+
+_UNSET = _Unset()
+
+
+def task(actions,
+         name=_UNSET,
+         basename=_UNSET,
+         file_dep=_UNSET,
+         task_dep=_UNSET,
+         setup=_UNSET,
+         targets=_UNSET,
+         uptodate=_UNSET,
+         calc_dep=_UNSET,
+         getargs=_UNSET,
+         teardown=_UNSET,
+         doc=_UNSET,
+         clean=_UNSET,
+         params=_UNSET,
+         pos_arg=_UNSET,
+         verbosity=_UNSET,
+         io=_UNSET,
+         title=_UNSET,
+         meta=_UNSET,
+         watch=_UNSET,
+         exclusive=_UNSET):
+    """Build the dict a task-creator returns, with the fields spelled out.
+
+    Exactly equivalent to writing the dict by hand -- this returns a plain
+    dict and adds no behaviour -- but the field names are function arguments,
+    so an editor completes them, a typo is a TypeError at load time instead of
+    an InvalidTask later, and the documentation is where the task is written::
+
+        def task_compile():
+            for src in SOURCES:
+                yield task(name=src.stem,
+                           actions=[f'cc -c {src}'],
+                           file_dep=[src],
+                           targets=[src.with_suffix('.o')])
+
+    Fields not passed are left out of the dict entirely, so `doit` applies its
+    own defaults; the defaults named below are what it then uses.
+
+    :param actions: what the task does. A list of:
+        callable, or tuple (callable, `*args`, `**kwargs`) -- a python-action;
+        string or list of strings -- a shell command;
+        None for a group-task, which has no actions of its own.
+    :param name: sub-task identifier. Required for a task yielded by a
+        generator, and not used otherwise.
+    :param basename: task name, instead of taking it from the name of the
+        task-creator function.
+    :param file_dep: (list of paths) files this task reads. The task is not up
+        to date when any of them changed since it last ran.
+    :param task_dep: (list of task names) tasks that must run before this one.
+        An ordering, not a reason to re-run: a task_dep that executes does not
+        by itself make this task out of date.
+    :param setup: (list of task names) tasks to run first, but only if this
+        task is going to execute. For preparing an environment this task needs
+        and an up-to-date task does not.
+    :param targets: (list of paths) files this task creates. A task whose
+        targets are missing is not up to date, and `doit clean` removes them.
+    :param uptodate: (list) each item None (ignored), a bool (False forces the
+        task to run), or a callable taking (task, values) and returning
+        bool or None.
+    :param calc_dep: (list of task names) tasks whose result is a dict of
+        further `file_dep` / `task_dep` / `uptodate` / `calc_dep` for this one.
+        For dependencies too expensive to compute while loading tasks.
+    :param getargs: (dict) name of a python-action argument -> tuple of
+        (task name, variable name), passing another task's computed value in.
+    :param teardown: (list of actions) run after every task has finished, in
+        the reverse of the order their tasks executed.
+    :param doc: (string) description, shown by `doit list`. Defaults to the
+        task-creator's docstring.
+    :param clean: True to remove the targets, or a list of actions to run, on
+        `doit clean`.
+    :param params: (list of dicts) command line options for this task's
+        actions. Each names at least `name` and `default`, and may add
+        `short`, `long`, `type`, `env_var`, `choices`, `help`, `inverse`.
+    :param pos_arg: (string) name of the python-action argument that receives
+        the task's positional command line arguments.
+    :param verbosity: 0 capture stdout and stderr, 1 capture stdout only,
+        2 capture nothing. None (default) to use the global setting.
+    :param io: (dict) `{'capture': False}` to stop doit saving this task's
+        output internally. Default `{'capture': True}`.
+    :param title: (callable) takes the task and returns the line printed when
+        it executes.
+    :param meta: (dict) anything a custom command or plugin wants to read off
+        the task. `doit` does not look at it.
+    :param watch: (list of paths) extra paths for the `auto` command to watch,
+        beyond `file_dep`. Folders are watched, but not their sub-folders.
+    :param exclusive: True if this task must never run at the same time as
+        another task. Only has an effect when running tasks in parallel.
+        Default False.
+    :return: (dict) the task, ready to be returned or yielded by a creator.
+    """
+    fields = {
+        'actions': actions,
+        'name': name,
+        'basename': basename,
+        'file_dep': file_dep,
+        'task_dep': task_dep,
+        'setup': setup,
+        'targets': targets,
+        'uptodate': uptodate,
+        'calc_dep': calc_dep,
+        'getargs': getargs,
+        'teardown': teardown,
+        'doc': doc,
+        'clean': clean,
+        'params': params,
+        'pos_arg': pos_arg,
+        'verbosity': verbosity,
+        'io': io,
+        'title': title,
+        'meta': meta,
+        'watch': watch,
+        'exclusive': exclusive,
+    }
+    return {key: value for key, value in fields.items()
+            if not isinstance(value, _Unset)}
+
+
 # action
 def create_folder(dir_path):
     """create a folder in the given path if it doesnt exist yet."""

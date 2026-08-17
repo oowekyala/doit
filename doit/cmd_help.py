@@ -100,6 +100,10 @@ meta:
 watch:
  - type: list. items:
    * (string) path to be watched when using the `auto` command
+
+exclusive:
+ - type: bool. if True the task never runs at the same time as another task.
+         Only has an effect when executing tasks in parallel [default: False]
 """
 
 

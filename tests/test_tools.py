@@ -1,5 +1,6 @@
 import os
 import datetime
+import inspect
 import json
 import operator
 import unittest
@@ -9,6 +10,42 @@ from unittest.mock import patch
 from doit import exceptions
 from doit import tools
 from doit import task
+
+
+class TestTask(unittest.TestCase):
+
+    def test_covers_every_task_attribute(self):
+        # the point of the constructor is that it names every field, so it is
+        # wrong the moment a task attribute is added without it
+        params = set(inspect.signature(tools.task).parameters)
+        self.assertEqual(params, set(task.Task.valid_attr))
+
+    def test_returns_a_plain_dict(self):
+        got = tools.task(actions=['do'], name='n', file_dep=['a'])
+        self.assertEqual(got, {'actions': ['do'], 'name': 'n',
+                               'file_dep': ['a']})
+
+    def test_omits_fields_not_passed(self):
+        # so doit applies its own defaults, rather than this function
+        # restating them
+        self.assertEqual(tools.task(None), {'actions': None})
+
+    def test_keeps_none_when_passed(self):
+        # None is meaningful for several attributes, and is not the same as
+        # leaving the field out
+        self.assertIn('verbosity', tools.task(None, verbosity=None))
+        self.assertIn('doc', tools.task(None, doc=None))
+
+    def test_builds_a_task(self):
+        built = task.dict_to_task(
+            tools.task(['do'], name='n', exclusive=True, verbosity=2))
+        self.assertEqual('n', built.name)
+        self.assertTrue(built.exclusive)
+        self.assertEqual(2, built.verbosity)
+
+    def test_rejects_unknown_field(self):
+        with self.assertRaises(TypeError):
+            tools.task(None, targts=['typo'])
 
 
 class TestCreateFolder(unittest.TestCase):

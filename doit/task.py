@@ -164,7 +164,8 @@ class Task:
                   'getargs': ((dict,), ()),
                   'title': ((Callable,), (None,)),
                   'watch': ((list, tuple), ()),
-                  'meta': ((dict,), (None,))
+                  'meta': ((dict,), (None,)),
+                  'exclusive': ((bool,), ()),
                   }
 
 
@@ -174,7 +175,7 @@ class Task:
                  subtask_of=None, has_subtask=False,
                  doc=None, params=(), pos_arg=None,
                  verbosity=None, io=None, title=None, getargs=None,
-                 watch=(), meta=None, loader=None):
+                 watch=(), meta=None, loader=None, exclusive=False):
         """sanity checks and initialization
 
         @param params: (list of dict for parameters) see cmdparse.CmdOption
@@ -200,6 +201,8 @@ class Task:
         self.check_attr(name, 'title', title, self.valid_attr['title'])
         self.check_attr(name, 'watch', watch, self.valid_attr['watch'])
         self.check_attr(name, 'meta', meta, self.valid_attr['meta'])
+        self.check_attr(name, 'exclusive', exclusive,
+                        self.valid_attr['exclusive'])
 
         if '=' in name:
             msg = "Task '{}': name must not use the char '=' (equal sign)."
@@ -237,6 +240,16 @@ class Task:
         self.uptodate = self._init_uptodate(uptodate)
 
         self.targets = self._init_targets(targets)
+        # Whether this task may share the machine. An exclusive task runs on
+        # its own: the parallel runners start nothing else while it runs, and
+        # hold it back until whatever is running has finished. Ignored by the
+        # single-process runner, where nothing shares anything anyway.
+        #
+        # This is a scheduling property, not a dependency -- an exclusive task
+        # is not ordered against the tasks it excludes, so it does not need
+        # fake task_deps between things that have nothing to do with each
+        # other, and adding one does not change what is up to date.
+        self.exclusive = exclusive
         self.subtask_of = subtask_of
         self.has_subtask = has_subtask
         self.result = None

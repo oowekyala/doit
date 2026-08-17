@@ -3,6 +3,7 @@ import sys
 import pickle
 import unittest
 from multiprocessing import Queue
+from threading import Thread
 import platform
 from unittest.mock import Mock, patch
 
@@ -343,6 +344,23 @@ def action_add_filedep(task, extra_dep):
 # TestRunner_run_tasks: parametrized over Runner, MThreadRunner, MRunner
 # ---------------------------------------------------------------------------
 
+def run_with_timeout(my_runner, dispatcher, timeout=10):
+    """run_tasks() on a daemon thread, so a deadlock fails instead of hanging"""
+    error = []
+    def run():
+        try:
+            my_runner.run_tasks(dispatcher)
+        except BaseException as exception:  # pylint: disable=broad-except
+            error.append(exception)
+    thread = Thread(target=run, daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if thread.is_alive():
+        raise AssertionError(f'run_tasks() stuck after {timeout}s')
+    if error:
+        raise error[0]
+
+
 class RunnerRunTasksBase:
     """Mixin with tests -- not discovered by rut because it does not
     inherit unittest.TestCase directly."""
@@ -507,6 +525,22 @@ class RunnerRunTasksBase:
         self.assertEqual(('ignore', t1), self.reporter.log.pop(0))
         self.assertEqual(('start', t2), self.reporter.log.pop(0))
         self.assertEqual(('ignore', t2), self.reporter.log.pop(0))
+        self.assertEqual(0, len(self.reporter.log))
+
+    # an up-to-date task is never dispatched, so the runner is the only one
+    # who can tell the dispatcher it was processed and release its dependents
+    def test_uptodate_dep_releases_waiting_task(self):
+        t1 = Task("t1", [(ok,)], uptodate=[True])
+        t2 = Task("t2", [(ok,)], task_dep=['t1'])
+        my_runner = self.runner_class(self.dep_manager, self.reporter)
+        disp = TaskDispatcher({'t1': t1, 't2': t2}, [], ['t2'])
+        run_with_timeout(my_runner, disp)
+        self.assertEqual(runner.SUCCESS, my_runner.finish())
+        self.assertEqual(('start', t1), self.reporter.log.pop(0))
+        self.assertEqual(('up-to-date', t1), self.reporter.log.pop(0))
+        self.assertEqual(('start', t2), self.reporter.log.pop(0))
+        self.assertEqual(('execute', t2), self.reporter.log.pop(0))
+        self.assertEqual(('success', t2), self.reporter.log.pop(0))
         self.assertEqual(0, len(self.reporter.log))
 
     def test_getargs(self):
@@ -766,6 +800,82 @@ class TestMRunner_get_next_job(DepManagerMixin, unittest.TestCase):
         # the job for t1 contains the whole task since sub-process dont
         # have it
         self.assertEqual(j1.type, runner.JobTask.type)
+
+
+# ---------------------------------------------------------------------------
+# TestMRunner_exclusive
+# ---------------------------------------------------------------------------
+
+@unittest.skipIf(not runner.MRunner.available(), 'MRunner not available')
+class TestMRunner_exclusive(DepManagerMixin, unittest.TestCase):
+    """`exclusive` tasks must not share the machine, in either direction:
+    they wait for whatever is running, and nothing starts beside them."""
+
+    def setUp(self):
+        super().setUp()
+        self.reporter = FakeReporter()
+
+    def _runner(self, *tasks):
+        run = runner.MRunner(self.dep_manager, self.reporter)
+        names = [t.name for t in tasks]
+        run._run_tasks_init(
+            TaskDispatcher({t.name: t for t in tasks}, [], names))
+        return run
+
+    def test_alone_starts_immediately(self):
+        # nothing to wait for, so exclusivity costs nothing
+        t1 = Task('t1', [], exclusive=True)
+        run = self._runner(t1)
+        self.assertEqual(t1.name, run.get_next_job(None).name)
+
+    def test_waits_for_running_tasks(self):
+        t1 = Task('t1', [])
+        t2 = Task('t2', [], exclusive=True)
+        run = self._runner(t1, t2)
+
+        self.assertEqual(t1.name, run.get_next_job(None).name)
+        # t2 is ready, but t1 holds the machine
+        self.assertIsInstance(run.get_next_job(None), runner.JobHold)
+        self.assertIsInstance(run.get_next_job(None), runner.JobHold)
+
+        run.task_finished()
+        self.assertEqual(t2.name, run.get_next_job(None).name)
+
+    def test_nothing_starts_beside_it(self):
+        t1 = Task('t1', [], exclusive=True)
+        t2 = Task('t2', [])
+        run = self._runner(t1, t2)
+
+        self.assertEqual(t1.name, run.get_next_job(None).name)
+        self.assertIsInstance(run.get_next_job(None), runner.JobHold)
+
+        run.task_finished()
+        self.assertEqual(t2.name, run.get_next_job(None).name)
+
+    def test_held_task_keeps_its_place(self):
+        # being held back is not the same as being moved to the end: t3 must
+        # not overtake the exclusive t2 while it waits
+        t1 = Task('t1', [])
+        t2 = Task('t2', [], exclusive=True)
+        t3 = Task('t3', [])
+        run = self._runner(t1, t2, t3)
+
+        self.assertEqual(t1.name, run.get_next_job(None).name)
+        self.assertIsInstance(run.get_next_job(None), runner.JobHold)
+
+        run.task_finished()
+        self.assertEqual(t2.name, run.get_next_job(None).name)
+        self.assertIsInstance(run.get_next_job(None), runner.JobHold)
+
+        run.task_finished()
+        self.assertEqual(t3.name, run.get_next_job(None).name)
+
+    def test_ordinary_tasks_still_share(self):
+        t1 = Task('t1', [])
+        t2 = Task('t2', [])
+        run = self._runner(t1, t2)
+        self.assertEqual(t1.name, run.get_next_job(None).name)
+        self.assertEqual(t2.name, run.get_next_job(None).name)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,6 @@
 """Task runner"""
 
+from collections import deque
 from multiprocessing import Process, Queue as MQueue
 from threading import Thread
 import pickle
@@ -358,6 +359,14 @@ class MRunner(Runner):
         self.tasks = None    # dict of task instances by name
         self.result_q = None
 
+        # Support for `exclusive` tasks, which must not share the machine.
+        self.running = 0  # tasks dispatched and not yet finished
+        self.running_exclusive = False  # ... and one of them is exclusive
+        # Nodes taken from the dispatcher that could not start yet. Held here
+        # rather than pushed back, since the dispatcher's generator only moves
+        # forwards; retried, in order, as soon as a task finishes.
+        self.deferred = deque()
+
 
     def __getstate__(self):
         # multiprocessing on Windows will try to pickle self.
@@ -369,6 +378,20 @@ class MRunner(Runner):
         pickle_dict['dep_manager'] = None
         return pickle_dict
 
+    def may_start(self, task):
+        """whether `task` may start right now, given what is already running
+
+        An exclusive task waits for the machine to clear, and once it holds it
+        nothing else starts. Both directions are needed: excluding others is
+        no use if the task itself is started alongside them.
+        """
+        if self.running_exclusive:
+            return False
+        if task.exclusive:
+            return self.running == 0
+        return True
+
+
     def get_next_job(self, completed):
         """get next task to be dispatched to sub-process
 
@@ -379,27 +402,56 @@ class MRunner(Runner):
         if self._stop_running:
             return None  # gentle stop
         node = completed
+        exhausted = False  # the dispatcher has no more tasks to give
         while True:
-            # get next task from controller
-            try:
-                node = self.task_dispatcher.generator.send(node)
-                if node == "hold on":
-                    self.free_proc += 1
-                    return JobHold()
-            # no more tasks from controller...
-            except StopIteration:
+            if self.deferred and (node is None or exhausted):
+                # Retry a task held back earlier, before asking for new work,
+                # so that holding one back does not reorder it behind
+                # everything that became ready while it waited.
+                candidate = self.deferred.popleft()
+            elif exhausted:
                 # ... terminate one sub process if no other task waiting
                 return None
+            else:
+                # get next task from controller
+                try:
+                    candidate = self.task_dispatcher.generator.send(node)
+                except StopIteration:
+                    # Nothing more to dispatch, but a held task may still be
+                    # waiting for the machine to clear.
+                    exhausted = True
+                    node = None
+                    continue
+                # `completed` has been delivered, and each node is sent back
+                # at most once.
+                node = None
+                if candidate == "hold on":
+                    self.free_proc += 1
+                    return JobHold()
+
+            # Checked before select_task, which may run only once per node --
+            # it is what advances the task's state and reports it.
+            if not self.may_start(candidate.task):
+                self.deferred.append(candidate)
+                self.free_proc += 1
+                return JobHold()
 
             # send a task to be executed
-            if self.select_task(node, self.tasks):
+            if self.select_task(candidate, self.tasks):
+                self.running += 1
+                self.running_exclusive = candidate.task.exclusive
                 # If sub-process already contains the Task object send
                 # only safe pickle data, otherwise send whole object.
-                task = node.task
+                task = candidate.task
                 if task.loader is DelayedLoaded and self.Child == Process:
                     return JobTask(task)
                 else:
                     return JobTaskPickle(task)
+
+            # Nothing to execute (up-to-date, ignored, or waiting on its setup
+            # tasks), but the node was processed: send it back so that the
+            # dispatcher releases whatever was waiting on it.
+            node = candidate
 
 
     def _run_tasks_init(self, task_dispatcher):
@@ -440,8 +492,20 @@ class MRunner(Runner):
             proc_list.append(process)
         return proc_list
 
+    def task_finished(self):
+        """note that a dispatched task is no longer running
+
+        The machine may have cleared enough for a task held back by
+        `exclusive` to start, which get_next_job() checks on its next call.
+        """
+        self.running -= 1
+        if self.running == 0:
+            self.running_exclusive = False
+
+
     def _process_result(self, node, task, result):
         """process result received from sub-process"""
+        self.task_finished()
         base_fail = result.get('failure')
         task.update_from_pickle(result['task'])
         for action, output in zip(task.actions, result['out']):

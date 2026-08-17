@@ -16,6 +16,32 @@ section.
 
 
 
+task (task dict)
+-------------------------
+
+Builds the dict a task-creator returns, one keyword argument per task field.
+
+.. code-block:: python
+
+    from doit.tools import task
+
+    def task_compile():
+        for src in SOURCES:
+            yield task(name=src.stem,
+                       actions=[f'cc -c {src}'],
+                       file_dep=[src],
+                       targets=[src.with_suffix('.o')])
+
+It returns a plain dict and adds nothing to it, so it is exactly equivalent to
+writing the dict out. What it buys is that the field names are arguments: an
+editor completes them, a misspelled field is a ``TypeError`` where the task is
+written rather than an ``InvalidTask`` once `doit` loads the dodo file, and
+each field's meaning is one keystroke away instead of in this page.
+
+Fields not passed are left out of the dict, so `doit` applies its own
+defaults.
+
+
 create_folder (action)
 -------------------------
 

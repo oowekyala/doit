@@ -652,6 +652,39 @@ This could be used by custom commands or plugins.
 .. literalinclude:: samples/metadata.py
 
 
+exclusive
+---------
+
+A task with **exclusive** set to ``True`` never runs at the same time as any
+other task. When `doit` executes tasks in parallel an exclusive task waits
+until nothing else is running, and nothing else is started until it finishes.
+Without parallel execution the attribute has no effect, since tasks never
+share the machine anyway.
+
+Use it for a task that measures something, or that needs a resource it cannot
+share -- a benchmark whose timings other tasks would distort, a device with a
+single connection, a port with a fixed number.
+
+.. code-block:: python
+
+    def task_benchmark():
+        for case in CASES:
+            yield {
+                'name': case.name,
+                'actions': [(measure, [case])],
+                'exclusive': True,
+            }
+
+This is a scheduling property, not a dependency. The alternative -- chaining
+the tasks with **task_dep** so no two can be picked up at once -- orders tasks
+that have nothing to do with each other, makes a failure in one skip every
+task chained behind it, and states something about the build graph that is not
+true. **exclusive** says only when a task may run.
+
+Exclusive tasks are not ordered among themselves either: they run one at a
+time, in whatever order the scheduler reaches them.
+
+
 pathlib
 --------
 
