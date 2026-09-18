@@ -1,5 +1,6 @@
 from .cmd_base import DoitCmdBase, check_tasks_exist
 from .cmd_base import tasks_and_deps_iter, subtasks_iter
+from .control import get_delayed_placeholder
 
 
 opt_forget_taskdep = {
@@ -52,6 +53,13 @@ class Forget(DoitCmdBase):
         # forget tasks from list
         else:
             tasks = dict([(t.name, t) for t in self.task_list])
+            # a name may be a not-yet-created subtask of a delayed
+            # (create_after) task-creator -- resolve those to a
+            # placeholder so they are recognized without running the
+            # creator (forget never executes any task).
+            for name in self.sel_tasks:
+                if name not in tasks:
+                    get_delayed_placeholder(tasks, name)
             check_tasks_exist(tasks, self.sel_tasks)
             forget_list = self.sel_tasks
 
